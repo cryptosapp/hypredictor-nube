@@ -6,7 +6,7 @@ import kumo_runner as K
 import supervisor as SUP
 from tests.test_pred_ia import HLFalso, OPS, lista
 
-CFG = {"pred_ia": "proponer", "ia": "veto", "pred_ventaja": 8, "pred_conf_min": 65, "pred_monto": 11, "pred_max_total": 30,
+CFG = {"pred_pct_libre": 100, "pred_ia": "proponer", "ia": "veto", "pred_ventaja": 8, "pred_conf_min": 65, "pred_monto": 11, "pred_max_total": 30,
        "pred_monto_techo": 20, "pred_max_total_techo": 30, "pred_prob_min": 5, "pred_prob_max": 95, "pred_categorias": ["cripto_hoy"]}
 
 

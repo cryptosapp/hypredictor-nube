@@ -222,6 +222,9 @@ def categoria(m):
 EXTRA_TURBULENCIA = 4
 
 
+PENALIZA_COMISION = 3.0   # puntos de ventaja extra que se piden a un mercado con comisión de creador
+
+
 def _sim_pct(m, ld, velas_de, cache):
     """Time Machine para un lado: % de trayectorias (con las velas de 15 min de 7 días) que
     terminan «Sí» al vencer. None si el mercado no trae subyacente, objetivo y vencimiento."""
@@ -264,6 +267,10 @@ def proponer(cfg, lista, posiciones, pendientes, libre, opinar, libro=None, glob
     peso = float((mod or {}).get("peso") or 0)
     ventaja_min = float(cfg.get("pred_ventaja") or 8)
     monto, tope = float(cfg.get("pred_monto") or 11), float(cfg.get("pred_max_total") or 30)
+    # Se adecua a tu saldo: cada compra es un % de lo libre en USDC (mínimo 1 USDC), con tope en cfg.
+    pct = float(cfg.get("pred_pct_libre") or 20) / 100
+    libre_usd = float(libre or 0)
+    monto = max(1.0, min(monto, libre_usd * pct))
     conf_min = float(cfg.get("pred_conf_min") if cfg.get("pred_conf_min") is not None else cfg.get("ia_conf_min") or 65)
     max_ciclo = int(cfg.get("pred_max_ciclo") or 1)
     if ((fb or {}).get("ajustes") or {}).get("max_ciclo"):
@@ -287,6 +294,9 @@ def proponer(cfg, lista, posiciones, pendientes, libre, opinar, libro=None, glob
     perdidas_hoy = sum(1 for d in compras_hoy if d.get("y") is not None and d["y"] < 0.5)
     max_dia = int(cfg.get("pred_max_dia") or 6)
     perd_max = float(cfg.get("pred_perdida_dia") or 2 * monto)
+    if libre_usd < 1:
+        max_ciclo = 0
+        notas.append(f"Saldo: tienes {libre_usd:.2f} USDC libres, menos del mínimo ~1 USDC por compra: no compro")
     if len(compras_hoy) >= max_dia:
         max_ciclo = 0
         notas.append(f"Riesgo: ya hiciste {len(compras_hoy)} compras hoy (máximo {max_dia}): no compro más hasta mañana (UTC)")
@@ -295,8 +305,10 @@ def proponer(cfg, lista, posiciones, pendientes, libre, opinar, libro=None, glob
         notas.append(f"Riesgo: llevas ${perdidas_hoy * monto:.2f} perdidos hoy en predicciones (límite ${perd_max:g}): no compro más hasta mañana (UTC)")
 
     turb_global = bool((glob or {}).get("turbulencia"))
+    # Comisión: un mercado con comisión extra de creador exige más ventaja, y sin ventaja
+    # suficiente no compra. Entre los que pasan, primero los que no cobran comisión.
     exigir = lambda m: (ventaja_min + (EXTRA_TURBULENCIA if turb_global or m.get("regimen") == "turbulento" else 0)
-                        + A.extra_para(aj, categoria(m)))
+                        + A.extra_para(aj, categoria(m)) + (PENALIZA_COMISION if m.get("comision_doble") else 0))
     # Probabilidad del modelo corregida con los resultados reales de este agente.
     pcal = lambda m, ld: round(100 * A.calibrar(ld["prob_modelo"] / 100, reg, categoria(m), "p_modelo"), 1) if reg else ld["prob_modelo"]
     elegibles, frenados = [], 0
@@ -322,7 +334,7 @@ def proponer(cfg, lista, posiciones, pendientes, libre, opinar, libro=None, glob
                     elegibles.append((m, ld))
                 else:
                     frenados += 1
-    elegibles.sort(key=lambda x: -x[1]["ventaja_cal"])
+    elegibles.sort(key=lambda x: (1 if x[0].get("comision_doble") else 0, -x[1]["ventaja_cal"]))
     cands, revisados_libro = [], 0
     for m, ld in elegibles:
         if len(cands) >= 3 or revisados_libro >= 8:

@@ -30,7 +30,7 @@ def opinar_fijo(resp):
     return f
 
 
-CFG = {"pred_ia": "proponer", "pred_monto": 11, "pred_max_total": 30, "pred_ventaja": 8, "ia_conf_min": 65}
+CFG = {"pred_pct_libre": 100, "pred_ia": "proponer", "pred_monto": 11, "pred_max_total": 30, "pred_ventaja": 8, "ia_conf_min": 65}
 
 
 OPS = {"#90170": {"accion": "COMPRAR", "confianza": 80, "prob": 85, "razon": "SOL lejos del objetivo"}}
@@ -197,7 +197,7 @@ class CicloAuto(unittest.TestCase):
         import os
         from unittest import mock
         hl = HLFalso()
-        remoto = {"config": {"modo": "real", "quote": "USDC", "objetivo": {}, "ia": "veto", "pred_ia": modo, "ordenes_ia": "off"}, "ordenes": []}
+        remoto = {"config": {"modo": "real", "quote": "USDC", "objetivo": {}, "ia": "veto", "pred_ia": modo, "ordenes_ia": "off", "pred_pct_libre": 100}, "ordenes": []}
         with mock.patch.dict(os.environ, {"EXCHANGE_ID": "hyperliquid", "EXCHANGE_API_KEY": "0xabc", "EXCHANGE_SECRET": "x", "KUMO_RUNNER_TOKEN": "t"}), \
                 mock.patch.object(K, "crear_exchange", lambda *a: hl), \
                 mock.patch.object(K, "http", lambda *a, **k: {"mercados": lista()}), \
@@ -242,7 +242,7 @@ class SoloCortoPlazo(unittest.TestCase):
         import os
         from unittest import mock
         hl = HLFalso()
-        remoto = {"config": {"modo": "real", "quote": "USDC", "objetivo": {}, "ia": "veto", "pred_ia": "auto", "ordenes_ia": "off",
+        remoto = {"config": {"modo": "real", "quote": "USDC", "objetivo": {}, "ia": "veto", "pred_ia": "auto", "ordenes_ia": "off", "pred_pct_libre": 100,
                              "pred_categorias": ["cripto_hoy", "cripto_mediano"], **cfg}, "ordenes": []}
         plazo = "hoy" if horas <= 36 else "mediano"
         with mock.patch.dict(os.environ, {"EXCHANGE_ID": "hyperliquid", "EXCHANGE_API_KEY": "0xabc", "EXCHANGE_SECRET": "x"}), \
