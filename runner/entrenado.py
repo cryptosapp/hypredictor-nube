@@ -201,6 +201,8 @@ def ejemplos_del_agente(apr):
     """Decisiones resueltas del propio agente con precio y modelo: también entrenan."""
     out = []
     for d in (apr or {}).get("decisiones") or []:
+        if d.get("origen") == "hyperliquid":
+            continue  # tus operaciones ya entran como ejemplos propios: no contarlas dos veces
         if d.get("y") is None or d.get("p_mercado") is None or d.get("p_modelo") is None:
             continue
         out.append({"p": float(d["p_mercado"]), "pm": float(d["p_modelo"]), "h": float(d.get("horas") or 0), "y": float(d["y"]), "o": "agente"})
@@ -327,3 +329,18 @@ def prob_lado(modelo, precio, p_modelo, horas):
     if not modelo or (modelo.get("n") or 0) < MIN_ENTRENAR or precio is None or p_modelo is None:
         return None
     return prob(modelo.get("w") or PRIOR, precio, p_modelo, float(horas or 0))
+
+
+def como_decisiones(ejemplos):
+    """Tus operaciones reales ya resueltas, en el formato del registro de aprendizaje
+    (cuentan en «compras ganadas», «ventaja real», calibración y lecciones)."""
+    out = []
+    for e in ejemplos or []:
+        if e.get("o") != "tuyo" or e.get("y") is None:
+            continue
+        cod = int(e["m"]) * 10 + int(e["l"])
+        out.append({"mercado": e["m"], "lado": e["l"], "coin": f"#{cod}", "etiqueta": f"{e.get('sub', '?')} · tu operación real"[:90],
+                    "categoria": "cripto_hoy" if (e.get("h") or 0) <= 36 else "cripto", "horas": e.get("h"),
+                    "precio": e["p"], "p_mercado": e["p"], "p_modelo": e["pm"], "accion": "comprar", "origen": "hyperliquid",
+                    "ts": e["t"], "vence": int(e["t"] + (e.get("h") or 0) * HORA), "y": e["y"], "resuelto": e["t"]})
+    return out

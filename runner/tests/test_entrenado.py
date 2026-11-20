@@ -91,5 +91,21 @@ class Decide(unittest.TestCase):
         self.assertIsNotNone(res["decisiones"][0]["p_ent"])
 
 
+
+class Aprende(unittest.TestCase):
+    def test_tus_operaciones_entran_al_aprendizaje_sin_contarse_dos_veces(self):
+        import aprendizaje as A
+        ej = [{"m": 40264, "l": 0, "t": 5 * H, "sub": "BTC", "p": 0.7, "pm": 0.8, "h": 10, "y": 1.0, "o": "tuyo"},
+              {"m": 39279, "l": 1, "t": 4 * H, "sub": "BTC", "p": 0.84, "pm": 0.76, "h": 4, "y": 0.0, "o": "tuyo"}]
+        apr, n = A.importar({}, T.como_decisiones(ej))
+        self.assertEqual(n, 2)
+        apr, n = A.importar(apr, T.como_decisiones(ej))
+        self.assertEqual(n, 0)
+        p = A.puntaje(apr, ahora=6 * H)
+        self.assertEqual((p["compras"], p["ganadas"]), (2, 1))
+        self.assertEqual(T.ejemplos_del_agente(apr), [])  # no se duplican en el entrenamiento
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -115,6 +115,13 @@ def ciclo(remoto, parcial=None, info=None):
             ent, nuevos_ent = T.actualizar(ent, fills, info_ent, hasta=time.time() + ENTRENAR_SEGUNDOS)
             if nuevos_ent:
                 notas.append(f"Modelo entrenado: sumé {nuevos_ent} operaciones tuyas ya liquidadas ({len(ent.get('ejemplos') or [])} en total)")
+            # Lo que falta leer y de qué cuenta (para mostrarlo en Aprende).
+            ent["cuenta"] = dueno
+            ent["compras_total"] = len(T.compras_de(fills))
+            # Tus operaciones resueltas también entran al aprendizaje (Brier, calibración, lecciones).
+            apr, n_hl = A.importar(apr, T.como_decisiones(ent.get("ejemplos")))
+            if n_hl:
+                notas.append(f"Aprendizaje: sumé {n_hl} operaciones reales tuyas de Hyperliquid")
         except Exception as e:  # nunca tumba el ciclo
             notas.append(f"Modelo entrenado: no pude leer tus operaciones ({type(e).__name__})")
     datos_ent = (ent.get("ejemplos") or []) + T.ejemplos_del_agente(apr)
@@ -250,6 +257,8 @@ def ciclo(remoto, parcial=None, info=None):
         "aprendizaje": apr, "importadas": importadas,
         "aprendizaje_resumen": {**puntos, "ajustes": aj, "lecciones": A.lecciones(apr) + T.lecciones(datos_ent),
                                 "entrenado": {k: v for k, v in (ent.get("modelo") or {}).items() if k != "w"},
+                                "hl": {"cuenta": ent.get("cuenta"), "leidas": len(ent.get("ejemplos") or []), "compras": ent.get("compras_total"),
+                                       "descartadas": len(ent.get("descartados") or []), "activo": bool(cfg.get("hl_cuenta"))},
                                 "calibracion_ia": A.tabla_calibracion(apr, campo="p_ia"),
                                 "calibracion_modelo": A.tabla_calibracion(apr, campo="p_modelo"),
                                 "recientes": [{k: d.get(k) for k in ("ts", "etiqueta", "categoria", "accion", "precio", "p_ia", "p_modelo", "y", "senales")}
