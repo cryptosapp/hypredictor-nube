@@ -501,7 +501,7 @@ def giro_otro_lado(base, ex, cfg, otro, cobrado, vendido, preds, notas, mid, hor
     """Después de vender por giro: compra (o propone comprar) el otro lado solo con lo
     cobrado, si el modelo le ve ventaja, está bajo tu máximo y cabe en tu tope."""
     tope = float(cfg.get("pred_max_total") or 30)
-    pmax = float(cfg.get("pred_prob_max") or 95) / 100
+    pmax = float(cfg.get("pred_prob_max") or 50) / 100
     mejor = base.mejor_precio_prediccion(int(str(otro["coin"]).lstrip("#")), True)
     ask = mejor and mejor.get("precio")
     pm = otro.get("prob_modelo")

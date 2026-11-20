@@ -275,7 +275,7 @@ def proponer(cfg, lista, posiciones, pendientes, libre, opinar, libro=None, glob
     max_ciclo = int(cfg.get("pred_max_ciclo") or 1)
     if ((fb or {}).get("ajustes") or {}).get("max_ciclo"):
         max_ciclo = min(max_ciclo, int(fb["ajustes"]["max_ciclo"]))
-    pmin, pmax = float(cfg.get("pred_prob_min") or 5) / 100, float(cfg.get("pred_prob_max") or 95) / 100
+    pmin, pmax = float(cfg.get("pred_prob_min") or 5) / 100, float(cfg.get("pred_prob_max") or 50) / 100
     horas_min = float(cfg.get("pred_horas_min") if cfg.get("pred_horas_min") is not None else 1)
     cats = set(cfg.get("pred_categorias") or ["cripto_hoy"])
     vender_ia = cfg.get("pred_vender_ia", True) is not False
