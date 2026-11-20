@@ -18,6 +18,7 @@ import aprendizaje as A
 from datetime import datetime, timezone
 
 import feedback as FB
+import entrenado as T
 
 PATRON = re.compile(r"^\+(\d+)$")
 TRADUCE = {"Yes": "Sí", "No": "No", "template:Yes": "Sí", "template:No": "No"}
@@ -236,6 +237,11 @@ def proponer(cfg, lista, posiciones, pendientes, libre, opinar, libro=None, glob
     exige la ventaja extra donde viene perdiendo. En el resumen vuelven las decisiones
     del ciclo («decisiones») para anotarlas y medirlas al vencer."""
     reg, aj = (aprender or {}).get("reg"), (aprender or {}).get("aj")
+    # Modelo entrenado con tus operaciones reales: da su probabilidad a cada lado y, si en
+    # validación acierta mejor que el mercado, mueve la probabilidad con su peso (≤ 0,5)
+    # y puede frenar una compra. Si no, solo informa a la IA.
+    mod = (aprender or {}).get("modelo")
+    peso = float((mod or {}).get("peso") or 0)
     ventaja_min = float(cfg.get("pred_ventaja") or 8)
     monto, tope = float(cfg.get("pred_monto") or 11), float(cfg.get("pred_max_total") or 30)
     conf_min = float(cfg.get("pred_conf_min") if cfg.get("pred_conf_min") is not None else cfg.get("ia_conf_min") or 65)
@@ -267,9 +273,12 @@ def proponer(cfg, lista, posiciones, pendientes, libre, opinar, libro=None, glob
             if ld.get("precio") is None or ld.get("prob_modelo") is None or not pmin <= ld["precio"] <= pmax:
                 continue
             ld = {**ld, "prob_cal": pcal(m, ld)}
-            # La ventaja de la nube, movida lo que el aprendizaje corrigió la probabilidad.
+            pe = T.prob_lado(mod, ld["precio"], ld["prob_cal"] / 100, m.get("horas"))
+            ld["prob_ent"] = round(pe * 100, 1) if pe is not None else None
+            prob_fin = ld["prob_cal"] if pe is None or not peso else round((1 - peso) * ld["prob_cal"] + peso * pe * 100, 1)
+            # La ventaja de la nube, movida lo que el aprendizaje y el modelo entrenado corrigieron la probabilidad.
             ld["ventaja_cal"] = round((ld.get("ventaja") if ld.get("ventaja") is not None else ld["prob_modelo"] - ld["precio"] * 100)
-                                      + ld["prob_cal"] - ld["prob_modelo"], 1)
+                                      + prob_fin - ld["prob_modelo"], 1)
             if ld["ventaja_cal"] >= ventaja_min:
                 if ld["ventaja_cal"] >= exigir(m):
                     elegibles.append((m, ld))
@@ -291,6 +300,7 @@ def proponer(cfg, lista, posiciones, pendientes, libre, opinar, libro=None, glob
         cands.append({"coin": ld["coin"], "pregunta": m["pregunta"], "regla": m.get("regla"), "lado": ld["nombre"], "precio": ask or ld["precio"],
                       "prob_mercado_pct": round(ld["precio"] * 100, 1), "prob_modelo_pct": ld["prob_modelo"], "ventaja_pts": ld["ventaja_cal"],
                       **({"prob_modelo_corregida_pct": ld["prob_cal"]} if ld["prob_cal"] != ld["prob_modelo"] else {}),
+                      **({"prob_modelo_entrenado_pct": ld["prob_ent"]} if ld.get("prob_ent") is not None else {}),
                       "senales": m.get("senales"), "_m": m, "_ld": ld,
                       "subyacente": m.get("nombre_sub") or m.get("subyacente"), "precio_actual": m.get("precio_actual"), "objetivo": m.get("objetivo"),
                       "distancia_pct": m.get("distancia_pct"), "horas_para_vencer": m.get("horas"), "cambio_1h_pct": m.get("cambio_1h_pct"),
@@ -361,6 +371,10 @@ def proponer(cfg, lista, posiciones, pendientes, libre, opinar, libro=None, glob
             if reg and o.get("prob") is not None and o["prob"] / 100 >= c["precio"] + 0.03:
                 notas.append(f"Aprendizaje: la IA daba {o['prob']:g}% a «{c['pregunta']} · {c['lado']}», pero corregido con sus resultados reales queda en {p_ia * 100:.0f}%: sin margen, no compro")
             continue  # la propia IA no ve margen suficiente
+        pe = c["_ld"].get("prob_ent")
+        if peso and pe is not None and pe / 100 < c["precio"] + 0.02:
+            notas.append(f"Modelo entrenado: la IA quería comprar «{c['pregunta']} · {c['lado']}» a {c['precio']:g}, pero con tus operaciones reales le da {pe:g}%: sin margen, no compro")
+            continue
         # Con menos USDC libre (o cerca del tope) compra por lo que alcance, desde ~1 USDC.
         maximo = min(tope - expuesto, libre)
         u = unidades_para(monto, c["precio"], maximo) if maximo > 0 else None
@@ -436,6 +450,7 @@ def proponer(cfg, lista, posiciones, pendientes, libre, opinar, libro=None, glob
             "mercado": cod // 10, "lado": cod % 10, "coin": c["coin"], "etiqueta": f"{c['pregunta']} · {c['lado']}"[:90], "categoria": c["categoria"],
             "horas": c.get("horas_para_vencer"), "vence": m.get("vence"), "precio": c["precio"], "p_mercado": c["precio"],
             "p_modelo": round(ld["prob_modelo"] / 100, 4), "p_ia": round(o["prob"] / 100, 4) if o.get("prob") is not None else None,
+            "p_ent": round(ld["prob_ent"] / 100, 4) if ld.get("prob_ent") is not None else None,
             "conf": o.get("confianza"), "accion": "comprar" if c["coin"] in compradas else "pasar", "ia_accion": o.get("accion"),
             "senales": m.get("senales"), "modelos": [v.get("modelo") for v in (o.get("votos") or [])][:5] or ([modelo] if modelo else None)})
     return nuevas, notas, resumen

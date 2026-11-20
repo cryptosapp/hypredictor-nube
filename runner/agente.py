@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import aprendizaje as A  # noqa: E402
 import estrategia as E  # noqa: E402
 import feedback as FB  # noqa: E402
+import entrenado as T  # noqa: E402
 import ia  # noqa: E402
 import kumo_runner as K  # noqa: E402
 import ordenes as O  # noqa: E402
@@ -31,6 +32,7 @@ from exchanges import crear_exchange  # noqa: E402
 from simulacion import SimPredicciones, resultado_oficial  # noqa: E402
 
 # Con FreeLLMAPI en el ciclo (arranca en el workflow) el ciclo ya pasa de 1 min: más margen.
+ENTRENAR_SEGUNDOS = 12   # tope por ciclo para sumar operaciones tuyas (lo demás, en los siguientes)
 IA_SEGUNDOS = 90 if os.getenv("FREELLMAPI_URL") else 30
 RESULTADOS_SEGUNDOS = 8  # tope para preguntar resultados oficiales antes de que decida la IA
 
@@ -98,6 +100,26 @@ def ciclo(remoto, parcial=None, info=None):
         notas.append(f"Aprendizaje: {resueltas} decisión{'es' if resueltas != 1 else ''} resuelta{'s' if resueltas != 1 else ''} con el resultado oficial de Hyperliquid")
     aj = A.ajustes(apr)
     notas += [f"Aprendizaje: {r}" for r in aj["razones"]]
+
+    # 1b) Modelo entrenado con tus operaciones reales de Hyperliquid (si diste tu dirección)
+    #     y con las decisiones resueltas del agente. Cuentas, sin IA; tope de tiempo propio.
+    ent = dict(apr.get("entrenado") or {})
+    if cfg.get("hl_cuenta"):
+        try:
+            info_ent = info if prueba else info_publica(8)
+            dueno = cfg["hl_cuenta"]
+            rol = info_ent({"type": "userRole", "user": dueno}) or {}
+            if rol.get("role") == "agent" and (rol.get("data") or {}).get("user"):
+                dueno = rol["data"]["user"]
+            fills = info_ent({"type": "userFills", "user": dueno}) or []
+            ent, nuevos_ent = T.actualizar(ent, fills, info_ent, hasta=time.time() + ENTRENAR_SEGUNDOS)
+            if nuevos_ent:
+                notas.append(f"Modelo entrenado: sumé {nuevos_ent} operaciones tuyas ya liquidadas ({len(ent.get('ejemplos') or [])} en total)")
+        except Exception as e:  # nunca tumba el ciclo
+            notas.append(f"Modelo entrenado: no pude leer tus operaciones ({type(e).__name__})")
+    datos_ent = (ent.get("ejemplos") or []) + T.ejemplos_del_agente(apr)
+    ent["modelo"] = T.entrenar(datos_ent)
+    apr = {**apr, "entrenado": ent}
 
     # 2) Cartera: en papel, cobra lo que ya liquidó Hyperliquid.
     if simulado:
@@ -177,13 +199,13 @@ def ciclo(remoto, parcial=None, info=None):
             errores.append(f"Predicciones: no pude leer los mercados de tu nube ({cache.get('error')}): no decidí nada")
         else:
             glob = cache.get("glob")
-            lecc = A.lecciones(apr)
+            lecc = A.lecciones(apr) + T.lecciones(datos_ent) + T.resumen_para_ia(ent.get("modelo"))
             historial = " ".join(x for x in (FB.para_ia(FB.resumir(estado.get("feedback"))) if estado.get("feedback") else None,
                                              ("Lo que aprendiste de tus resultados oficiales: " + " ".join(lecc)) if lecc else None) if x) or None
             nuevas_p, notas_p, resumen = PR.proponer(
                 cfg, lista, preds, pendientes, saldos.get("USDC", 0.0),
                 lambda c, p: ia.opinar_predicciones(c, p, glob, None, historial),
-                libro=ex.mejor_precio_prediccion, glob=glob, excluir={int(k) for k in giros}, aprender={"reg": apr, "aj": aj})
+                libro=ex.mejor_precio_prediccion, glob=glob, excluir={int(k) for k in giros}, aprender={"reg": apr, "aj": aj, "modelo": ent.get("modelo")})
             notas += notas_p
             for o in nuevas_p:
                 o["id"] = o.get("id") or f"ag{int(time.time() * 1000)}{len(nuevas)}"
@@ -226,7 +248,8 @@ def ciclo(remoto, parcial=None, info=None):
         "ordenes_upd": ordenes_upd, "ordenes_nuevas": nuevas, "ejecutadas": ejecutadas,
         "notas": notas[:25], "errores": errores[:10], "giros": giros,
         "aprendizaje": apr, "importadas": importadas,
-        "aprendizaje_resumen": {**puntos, "ajustes": aj, "lecciones": A.lecciones(apr),
+        "aprendizaje_resumen": {**puntos, "ajustes": aj, "lecciones": A.lecciones(apr) + T.lecciones(datos_ent),
+                                "entrenado": {k: v for k, v in (ent.get("modelo") or {}).items() if k != "w"},
                                 "calibracion_ia": A.tabla_calibracion(apr, campo="p_ia"),
                                 "calibracion_modelo": A.tabla_calibracion(apr, campo="p_modelo"),
                                 "recientes": [{k: d.get(k) for k in ("ts", "etiqueta", "categoria", "accion", "precio", "p_ia", "p_modelo", "y", "senales")}

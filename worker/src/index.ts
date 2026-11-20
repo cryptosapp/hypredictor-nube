@@ -133,6 +133,13 @@ function validarConfig(actual: Json, cambios: Json): { config?: Json; error?: st
     if (!['off', 'proponer', 'auto'].includes(cambios.pred_ia)) return { error: 'pred_ia inválido' };
     c.pred_ia = cambios.pred_ia;
   }
+  // Tu cuenta de Hyperliquid (dirección pública, solo lectura): el agente entrena su
+  // modelo con tus operaciones reales. Vacía = no entrenar con ellas.
+  if (cambios.hl_cuenta !== undefined) {
+    const d = String(cambios.hl_cuenta || '').trim();
+    if (d && !/^0x[0-9a-fA-F]{40}$/.test(d)) return { error: 'hl_cuenta debe ser una dirección 0x de 40 caracteres' };
+    c.hl_cuenta = d;
+  }
   // Protección por giro: la única venta con pérdida en predicciones, y solo si la activas.
   if (cambios.pred_giro !== undefined) {
     if (!['off', 'vender', 'girar'].includes(cambios.pred_giro)) return { error: 'pred_giro inválido' };
