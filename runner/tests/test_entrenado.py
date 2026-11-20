@@ -16,7 +16,7 @@ def ejemplos(n, senal, semilla=1):
         verdad = r.uniform(0.1, 0.9)
         p = min(0.95, max(0.05, verdad + r.uniform(-0.35, 0.35)))      # el mercado se equivoca
         pm = min(0.97, max(0.03, verdad if senal else r.uniform(0.05, 0.95)))
-        out.append({"p": p, "pm": pm, "h": r.uniform(1, 20), "y": 1.0 if r.random() < verdad else 0.0, "t": i, "o": "tuyo"})
+        out.append({"p": p, "pm": pm, "h": r.uniform(1, 20), "y": 1.0 if r.random() < verdad else 0.0, "t": i * H, "o": "tuyo"})
     return out
 
 
@@ -73,6 +73,32 @@ class Modelo(unittest.TestCase):
         self.assertLess(m["brier_cv"], m["brier_mercado"])
         self.assertGreater(m["w"][2], 0.2)  # aprende a creerle al modelo estadístico
         self.assertGreater(T.prob_lado(m, 0.4, 0.8, 5), 0.5)
+
+
+class Validacion(unittest.TestCase):
+    def test_no_entrena_con_el_futuro_ni_con_resultados_que_aun_no_existen(self):
+        # Un ejemplo de hace 1 h que se resolvió en 20 h cae dentro del bloque de prueba: se purga.
+        datos = ejemplos(250, True)
+        for d in datos:
+            d["h"] = 20.0
+        m = T.entrenar(datos)
+        self.assertGreater(m["purgados"], 0)
+        self.assertEqual(m["bloques"], 5)
+
+    def test_influye_solo_si_mejora_en_la_mayoria_de_bloques(self):
+        m = T.entrenar(ejemplos(250, True))
+        self.assertGreaterEqual(m["bloques_ok"], 4)
+
+    def test_deriva_detecta_cambio_de_precios(self):
+        viejo = [{"p": 0.3 + 0.001 * i % 0.2, "pm": 0.5, "h": 5.0, "t": i * H} for i in range(100)]
+        nuevo = [{"p": 0.9, "pm": 0.5, "h": 5.0, "t": (100 + i) * H} for i in range(40)]
+        d = T.deriva(viejo + nuevo)
+        self.assertIn(d["estado"], ("moderada", "fuerte"))
+        self.assertGreater(d["psi"]["precio"], 0.2)
+
+    def test_deriva_estable_sin_cambios(self):
+        datos = [{"p": 0.2 + 0.6 * ((i * 37) % 100) / 100, "pm": 0.5, "h": 5.0, "t": i * H} for i in range(200)]
+        self.assertEqual(T.deriva(datos)["estado"], "estable")
 
 
 class Decide(unittest.TestCase):

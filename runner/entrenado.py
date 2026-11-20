@@ -262,39 +262,105 @@ def _brier(pares):
     return sum((p - y) ** 2 for p, y in pares) / len(pares) if pares else None
 
 
+EMBARGO_MS = 6 * HORA         # margen tras el bloque de prueba (autocorrelación)
+
+
+def _psi(ref, cur, bins=10):
+    """Population Stability Index entre dos muestras (ref = periodo de entrenamiento)."""
+    if len(ref) < bins or not cur:
+        return None
+    s = sorted(ref)
+    cortes = [s[min(len(s) - 1, (len(s) * i) // bins)] for i in range(1, bins)]
+    def dist(xs):
+        c = [0] * bins
+        for x in xs:
+            i = sum(1 for k in cortes if x > k)
+            c[i] += 1
+        return [max(v / len(xs), 1e-4) for v in c]
+    r, c = dist(ref), dist(cur)
+    return round(sum((cc - rr) * math.log(cc / rr) for rr, cc in zip(r, c)), 4)
+
+
+def deriva(datos, corte=0.7):
+    """PSI de las entradas (precio, modelo, horas) entre lo viejo (70 %) y lo reciente (30 %).
+    > 0,20 = deriva fuerte: el mercado ya no se parece al que aprendió el modelo."""
+    d = sorted(datos, key=lambda e: e.get("t") or 0)
+    k = int(len(d) * corte)
+    viejo, nuevo = d[:k], d[k:]
+    if len(viejo) < 20 or len(nuevo) < 10:
+        return {"estado": "sin datos", "psi": {}}
+    psi = {nom: _psi([x[c] for x in viejo], [x[c] for x in nuevo]) for nom, c in (("precio", "p"), ("modelo", "pm"), ("horas", "h"))}
+    mx = max(v for v in psi.values() if v is not None) if any(v is not None for v in psi.values()) else None
+    estado = "sin datos" if mx is None else "fuerte" if mx > 0.20 else "moderada" if mx > 0.10 else "estable"
+    return {"estado": estado, "psi": psi}
+
+
 def entrenar(datos, k=5):
-    """Ajusta y valida por partes. Devuelve el resumen del modelo (o uno vacío)."""
+    """Ajusta y valida en bloques TEMPORALES (cada bloque es el futuro de lo que vio el modelo).
+    Purga: quita de entrenamiento lo que se resolvió dentro del bloque de prueba.
+    Embargo: quita lo que ocurrió justo después del bloque. Solo influye si mejora el mercado
+    en la mayoría de los bloques (no basta con el promedio)."""
     datos = [d for d in datos if d.get("p") is not None and d.get("pm") is not None and d.get("y") is not None]
     n = len(datos)
     base = {"n": n, "tuyos": sum(1 for d in datos if d.get("o") == "tuyo"), "agente": sum(1 for d in datos if d.get("o") == "agente"),
             "peso": 0.0, "w": PRIOR, "ts": int(time.time() * 1000)}
     if n < MIN_ENTRENAR:
         return {**base, "motivo": f"Faltan datos: {n} de {MIN_ENTRENAR} operaciones resueltas"}
-    orden = sorted(range(n), key=lambda i: datos[i].get("t") or i)
-    pares_cv = []
-    for f in range(k):
-        prueba = [datos[i] for j, i in enumerate(orden) if j % k == f]
-        resto = [datos[i] for j, i in enumerate(orden) if j % k != f]
+    datos = sorted(datos, key=lambda d: d.get("t") or 0)
+    bloques = [list(range((f * n) // k, ((f + 1) * n) // k)) for f in range(k)]
+    pares_cv, gana_bloques, purgados = [], 0, 0
+    for idx in bloques:
+        if not idx:
+            continue
+        ini = datos[idx[0]].get("t") or 0
+        fin = datos[idx[-1]].get("t") or 0
+        prueba = [datos[i] for i in idx]
+        resto = []
+        for i, d in enumerate(datos):
+            if i in idx:
+                continue
+            res = (d.get("t") or 0) + (d.get("h") or 0) * HORA          # cuándo se resolvió
+            antes = (d.get("t") or 0) < ini
+            if antes and res >= ini:          # se resolvió dentro del bloque de prueba: purga
+                purgados += 1
+                continue
+            if not antes and (d.get("t") or 0) <= fin + EMBARGO_MS:  # justo después: embargo
+                purgados += 1
+                continue
+            resto.append(d)
+        if len(resto) < 5:
+            continue
         w = ajustar(resto)
-        pares_cv += [(prob(w, d["p"], d["pm"], d["h"]), d["y"]) for d in prueba]
+        pb = [(prob(w, d["p"], d["pm"], d["h"]), d["y"]) for d in prueba]
+        pares_cv += pb
+        bm = _brier([(_clip(d["p"]), d["y"]) for d in prueba])
+        bo = _brier(pb)
+        if bo is not None and bm is not None and bo < bm:
+            gana_bloques += 1
+    if not pares_cv:
+        return {**base, "motivo": "Faltan operaciones con tiempos suficientes para validar por bloques"}
     w = ajustar(datos)
     b_cv = _brier(pares_cv)
     b_mer = _brier([(_clip(d["p"]), d["y"]) for d in datos])
     b_mod = _brier([(_clip(d["pm"]), d["y"]) for d in datos])
-    mejora = (b_mer - b_cv) / b_mer if b_mer else 0.0
+    mejora = (b_mer - b_cv) / b_mer if b_mer and b_cv is not None else 0.0
+    estables = gana_bloques >= -(-4 * k // 5)     # al menos 4 de 5 bloques
     peso = 0.0
-    if n >= MIN_INFLUIR and mejora > 0:
+    if n >= MIN_INFLUIR and mejora > 0 and estables:
         peso = round(min(PESO_MAX, mejora * 4) * min(1.0, n / 100), 3)
     ganadas = sum(1 for d in datos if d["y"] >= 0.5)
     ventaja = sum(d["y"] - d["p"] for d in datos) / n
     if peso > 0:
-        motivo = f"Influye con peso {peso:.2f}: en validación acierta mejor que el precio del mercado"
+        motivo = f"Influye con peso {peso:.2f}: en validación acierta mejor que el precio en {gana_bloques} de {k} bloques de tiempo"
     elif n < MIN_INFLUIR:
         motivo = f"Aprendiendo: influye desde {MIN_INFLUIR} operaciones resueltas (hay {n})"
+    elif mejora > 0 and not estables:
+        motivo = f"No influye: mejora el precio en promedio, pero solo en {gana_bloques} de {k} bloques de tiempo (hace falta 4 de {k})"
     else:
         motivo = "No influye: todavía no acierta mejor que el precio del mercado"
     return {**base, "w": [round(x, 4) for x in w], "brier_cv": round(b_cv, 4), "brier_mercado": round(b_mer, 4),
-            "brier_modelo": round(b_mod, 4), "peso": peso, "ganadas": ganadas, "ventaja_pts": round(ventaja * 100, 1), "motivo": motivo}
+            "brier_modelo": round(b_mod, 4), "peso": peso, "ganadas": ganadas, "ventaja_pts": round(ventaja * 100, 1),
+            "bloques": k, "bloques_ok": gana_bloques, "purgados": purgados, "deriva": deriva(datos), "motivo": motivo}
 
 
 def lecciones(datos, maximo=3):
