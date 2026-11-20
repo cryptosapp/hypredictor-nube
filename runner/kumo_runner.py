@@ -438,6 +438,12 @@ def solo_corto_ok(cfg, o):
     return h is not None and h <= float(cfg.get("pred_corto_horas") or 36)
 
 
+def _velas_15m(info, sub):
+    """Velas de 15 min de los últimos 7 días (para la simulación empírica, Time Machine)."""
+    ahora = int(time.time() * 1000)
+    return info({"type": "candleSnapshot", "req": {"coin": sub, "interval": "15m", "startTime": ahora - 7 * 86_400_000, "endTime": ahora}}) or []
+
+
 def precio_al_vencer(base, subyacente, ms):
     """Cierre de la vela de 1 minuto que termina en el vencimiento (Hyperliquid), o None."""
     velas = base._info_hl({"type": "candleSnapshot", "req": {"coin": subyacente, "interval": "1m", "startTime": ms - 180_000, "endTime": ms + 60_000}}) or []
@@ -548,7 +554,8 @@ def predicciones_ia(base, ex, cfg, preds, pendientes, libre, notas, mercados_pre
             datos = http("GET", url_nube() + "/runner/predicciones", os.getenv("KUMO_RUNNER_TOKEN", ""))
             lista, glob = datos.get("mercados") or [], datos.get("global")
         nuevas, notas_p, resumen = PR.proponer(cfg, lista, preds, pendientes, libre, lambda c, p: ia.opinar_predicciones(c, p, glob, titulares, FB.para_ia(fb)),
-                                               base.mejor_precio_prediccion, glob, fb, excluir)
+                                               base.mejor_precio_prediccion, glob, fb, excluir,
+                                               velas_de=lambda sub: _velas_15m(base._info_hl, sub))
     except Exception as e:  # nunca debe tumbar el ciclo
         notas.append(f"IA predicciones: {type(e).__name__}")
         return [], None

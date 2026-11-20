@@ -37,6 +37,12 @@ IA_SEGUNDOS = 90 if os.getenv("FREELLMAPI_URL") else 30
 RESULTADOS_SEGUNDOS = 8  # tope para preguntar resultados oficiales antes de que decida la IA
 
 
+def _velas_15m(info, sub):
+    """Velas de 15 min de los últimos 7 días (para la simulación empírica, Time Machine)."""
+    ahora = int(time.time() * 1000)
+    return info({"type": "candleSnapshot", "req": {"coin": sub, "interval": "15m", "startTime": ahora - 7 * 86_400_000, "endTime": ahora}}) or []
+
+
 def info_publica(timeout=20):
     """POST público a la API de Hyperliquid (sin claves)."""
     def info(cuerpo):
@@ -212,7 +218,8 @@ def ciclo(remoto, parcial=None, info=None):
             nuevas_p, notas_p, resumen = PR.proponer(
                 cfg, lista, preds, pendientes, saldos.get("USDC", 0.0),
                 lambda c, p: ia.opinar_predicciones(c, p, glob, None, historial),
-                libro=ex.mejor_precio_prediccion, glob=glob, excluir={int(k) for k in giros}, aprender={"reg": apr, "aj": aj, "modelo": ent.get("modelo")})
+                libro=ex.mejor_precio_prediccion, glob=glob, excluir={int(k) for k in giros}, aprender={"reg": apr, "aj": aj, "modelo": ent.get("modelo")},
+                velas_de=lambda sub: _velas_15m(info, sub))
             notas += notas_p
             for o in nuevas_p:
                 o["id"] = o.get("id") or f"ag{int(time.time() * 1000)}{len(nuevas)}"

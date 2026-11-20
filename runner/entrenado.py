@@ -16,6 +16,7 @@ mejor que el precio del mercado (Brier); su peso crece con los datos y la mejora
 PESO_MAX. Sin dependencias: Newton con matrices 4×4 en Python puro.
 """
 import math
+import random
 import time
 
 HORA = 3_600_000
@@ -28,6 +29,9 @@ PESO_MAX = 0.5
 LAMBDA = 4.0                  # cuánto tira hacia «el mercado tiene razón»
 PRIOR = [0.0, 1.0, 0.0, 0.0]
 VELAS_HORAS = 26              # velas antes de cada compra para la volatilidad
+TM_DIAS = 7                   # historia de velas de 15 min para la simulación empírica
+TM_SIMS = 500                 # trayectorias por mercado (Time Machine)
+TM_MAX_PASOS = 200            # hasta 50 h de vida; más allá se usa solo el modelo log-normal
 
 
 # ---------------------------------------------------------------- utilidades
@@ -129,6 +133,49 @@ def prob_modelo_en(mk, velas, t):
     return None if a is None or b is None else max(0.0, a - b)
 
 
+def rets_15m(velas, t):
+    """Retornos logarítmicos de cierres de 15 min de los últimos TM_DIAS antes de t (ms)."""
+    ini = t - TM_DIAS * DIA
+    cs = [float(v["c"]) for v in sorted(velas, key=lambda v: int(v["t"])) if ini <= int(v["t"]) <= t and float(v.get("c") or 0) > 0]
+    return [math.log(b / a) for a, b in zip(cs, cs[1:])]
+
+
+def simular_finales(S, rets, horas, sims=TM_SIMS, seed=7):
+    """Time Machine: rehace el camino del precio `sims` veces con los retornos reales de 15 min
+    (muestreo con reemplazo) y devuelve los precios finales. None si no hay base."""
+    n = int(round(horas * 4))
+    if not rets or len(rets) < 50 or n < 1 or n > TM_MAX_PASOS or S <= 0:
+        return None
+    rng = random.Random(seed)
+    return [S * math.exp(sum(rng.choice(rets) for _ in range(n))) for _ in range(sims)]
+
+
+def prob_empirica(mk, velas, t):
+    """Probabilidad empírica (Time Machine) del lado «Sí» en t (ms), o None."""
+    antes = [v for v in velas if int(v["t"]) <= t]
+    if not antes or mk.get("vence") is None:
+        return None
+    S = float(sorted(antes, key=lambda v: int(v["t"]))[-1]["c"])
+    horas = (mk["vence"] - t) / HORA
+    finales = simular_finales(S, rets_15m(velas, t), horas, seed=int(t) % 100003)
+    if not finales:
+        return None
+    frac = lambda K: sum(1 for x in finales if x >= K) / len(finales)
+    if mk["tipo"] == "sobre":
+        return frac(mk["K"])
+    a = 1.0 if mk.get("desde") is None else frac(mk["desde"])
+    b = 0.0 if mk.get("hasta") is None else frac(mk["hasta"])
+    return max(0.0, a - b)
+
+
+def pm_para_modelo(modelo, pm_log, pb):
+    """Qué probabilidad usa el modelo entrenado: la de la fuente que ganó en validación.
+    Si la fuente es la simulación y este mercado no tiene simulación, no influye (None)."""
+    if (modelo or {}).get("fuente") == "simulacion":
+        return pb
+    return pm_log
+
+
 # ---------------------------------------------------------------- datos
 def compras_de(fills):
     """Tus compras en predicciones agrupadas por mercado+lado: precio medio y primera hora."""
@@ -180,7 +227,7 @@ def actualizar(reg, fills, info, ahora=None, hasta=None, max_resultados=MAX_RESU
         if mk["sub"] not in velas_por:
             try:
                 velas_por[mk["sub"]] = info({"type": "candleSnapshot", "req": {"coin": mk["sub"], "interval": "15m",
-                                             "startTime": min(x["t"] for x in pend) - VELAS_HORAS * HORA, "endTime": ahora}}) or []
+                                             "startTime": min(x["t"] for x in pend) - TM_DIAS * DIA, "endTime": ahora}}) or []
             except Exception:
                 velas_por[mk["sub"]] = []
         pm_si = prob_modelo_en(mk, velas_por[mk["sub"]], c["t"])
@@ -188,8 +235,10 @@ def actualizar(reg, fills, info, ahora=None, hasta=None, max_resultados=MAX_RESU
             malos.add((c["m"], c["l"]))
             continue
         y = mk["sf"] if c["l"] == 0 else 1 - mk["sf"]
+        pb_si = prob_empirica(mk, velas_por[mk["sub"]], c["t"])
         ej.append({"m": c["m"], "l": c["l"], "t": c["t"], "sub": mk["sub"], "p": round(c["p"], 4),
                    "pm": round(pm_si if c["l"] == 0 else 1 - pm_si, 4), "h": round((mk["vence"] - c["t"]) / HORA, 2),
+                   "pb": None if pb_si is None else round(pb_si if c["l"] == 0 else 1 - pb_si, 4),
                    "y": round(y, 3), "u": round(c["u"], 2), "o": "tuyo"})
         nuevos += 1
     ej.sort(key=lambda e: -e["t"])
@@ -307,6 +356,16 @@ def entrenar(datos, k=5):
     if n < MIN_ENTRENAR:
         return {**base, "motivo": f"Faltan datos: {n} de {MIN_ENTRENAR} operaciones resueltas"}
     datos = sorted(datos, key=lambda d: d.get("t") or 0)
+    # Fuente de probabilidad: la simulación empírica (Time Machine) si acierta mejor que la
+    # log-normal en los mercados donde existe; si no, la log-normal.
+    tm = [d for d in datos if d.get("pb") is not None]
+    b_tm_ln = _brier([(_clip(d["pm"]), d["y"]) for d in tm]) if tm else None
+    b_tm_sim = _brier([(_clip(d["pb"]), d["y"]) for d in tm]) if tm else None
+    fuente = "simulacion" if len(tm) >= MIN_ENTRENAR and b_tm_sim < b_tm_ln else "lognormal"
+    if fuente == "simulacion":
+        datos = [{**d, "pm": d["pb"]} for d in tm]
+        n = len(datos)
+        base["n"] = n
     bloques = [list(range((f * n) // k, ((f + 1) * n) // k)) for f in range(k)]
     pares_cv, gana_bloques, purgados = [], 0, 0
     for idx in bloques:
@@ -360,7 +419,9 @@ def entrenar(datos, k=5):
         motivo = "No influye: todavía no acierta mejor que el precio del mercado"
     return {**base, "w": [round(x, 4) for x in w], "brier_cv": round(b_cv, 4), "brier_mercado": round(b_mer, 4),
             "brier_modelo": round(b_mod, 4), "peso": peso, "ganadas": ganadas, "ventaja_pts": round(ventaja * 100, 1),
-            "bloques": k, "bloques_ok": gana_bloques, "purgados": purgados, "deriva": deriva(datos), "motivo": motivo}
+            "bloques": k, "bloques_ok": gana_bloques, "purgados": purgados, "deriva": deriva(datos),
+            "fuente": fuente, "tm_n": len(tm), "tm_brier_simulacion": round(b_tm_sim, 4) if b_tm_sim is not None else None,
+            "tm_brier_lognormal": round(b_tm_ln, 4) if b_tm_ln is not None else None, "motivo": motivo + (" · probabilidad: simulación empírica" if fuente == "simulacion" else "")}
 
 
 def lecciones(datos, maximo=3):
@@ -385,6 +446,8 @@ def resumen_para_ia(modelo):
     m = modelo
     frase = (f"Historial real del dueño: {m.get('ganadas', 0)}/{m['n']} lados ganados, ventaja real {m.get('ventaja_pts', 0):+g} puntos "
              f"sobre lo pagado. Brier: mercado {m.get('brier_mercado')}, modelo estadístico {m.get('brier_modelo')}, modelo entrenado {m.get('brier_cv')}.")
+    if m.get("fuente") == "simulacion":
+        frase += " La probabilidad del modelo viene de la simulación empírica (Time Machine con tus velas), porque acertó mejor."
     if m.get("peso"):
         frase += f" El modelo entrenado pesa {m['peso']:.2f} en la decisión: tenlo en cuenta (va en prob_modelo_entrenado_pct)."
     return [frase] if m.get("brier_mercado") is not None else []

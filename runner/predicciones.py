@@ -222,7 +222,27 @@ def categoria(m):
 EXTRA_TURBULENCIA = 4
 
 
-def proponer(cfg, lista, posiciones, pendientes, libre, opinar, libro=None, glob=None, fb=None, excluir=None, aprender=None):
+def _sim_pct(m, ld, velas_de, cache):
+    """Time Machine para un lado: % de trayectorias (con las velas de 15 min de 7 días) que
+    terminan «Sí» al vencer. None si el mercado no trae subyacente, objetivo y vencimiento."""
+    if not velas_de or not m.get("subyacente") or m.get("objetivo") is None or not m.get("vence"):
+        return None
+    sub = m["subyacente"]
+    if sub not in cache:
+        try:
+            cache[sub] = velas_de(sub) or []
+        except Exception:
+            cache[sub] = []
+    if not cache[sub]:
+        return None
+    pb = T.prob_empirica({"sub": sub, "tipo": "sobre", "K": float(m["objetivo"]), "vence": int(m["vence"])}, cache[sub], int(time.time() * 1000))
+    if pb is None:
+        return None
+    lado = int(str(ld.get("coin") or "#0").lstrip("#+")) % 10
+    return round(100 * (pb if lado == 0 else 1 - pb), 2)
+
+
+def proponer(cfg, lista, posiciones, pendientes, libre, opinar, libro=None, glob=None, fb=None, excluir=None, aprender=None, velas_de=None):
     """La IA revisa los mejores candidatos y tus posiciones. Devuelve
     (órdenes_nuevas, notas, resumen). Con `libro(cod, comprar)` cada candidato se
     comprueba contra el mejor precio REAL antes de gastar una consulta de IA, y la
@@ -259,6 +279,20 @@ def proponer(cfg, lista, posiciones, pendientes, libre, opinar, libro=None, glob
     abiertos |= set(excluir or ())
     por_mercado = {m["mercado"]: m for m in lista}
     notas, nuevas = [], []
+    # Límites de riesgo del día (UTC): cuántas compras, y cuánto has perdido ya en predicciones.
+    # Si se alcanza alguno, la IA no compra más hoy (sí puede vender).
+    dia0 = int(time.time() // 86400) * 86400 * 1000
+    compras_hoy = [d for d in ((aprender or {}).get("reg") or {}).get("decisiones") or []
+                   if d.get("accion") == "comprar" and (d.get("ts") or 0) >= dia0]
+    perdidas_hoy = sum(1 for d in compras_hoy if d.get("y") is not None and d["y"] < 0.5)
+    max_dia = int(cfg.get("pred_max_dia") or 6)
+    perd_max = float(cfg.get("pred_perdida_dia") or 2 * monto)
+    if len(compras_hoy) >= max_dia:
+        max_ciclo = 0
+        notas.append(f"Riesgo: ya hiciste {len(compras_hoy)} compras hoy (máximo {max_dia}): no compro más hasta mañana (UTC)")
+    elif perdidas_hoy * monto >= perd_max:
+        max_ciclo = 0
+        notas.append(f"Riesgo: llevas ${perdidas_hoy * monto:.2f} perdidos hoy en predicciones (límite ${perd_max:g}): no compro más hasta mañana (UTC)")
 
     turb_global = bool((glob or {}).get("turbulencia"))
     exigir = lambda m: (ventaja_min + (EXTRA_TURBULENCIA if turb_global or m.get("regimen") == "turbulento" else 0)
@@ -266,6 +300,7 @@ def proponer(cfg, lista, posiciones, pendientes, libre, opinar, libro=None, glob
     # Probabilidad del modelo corregida con los resultados reales de este agente.
     pcal = lambda m, ld: round(100 * A.calibrar(ld["prob_modelo"] / 100, reg, categoria(m), "p_modelo"), 1) if reg else ld["prob_modelo"]
     elegibles, frenados = [], 0
+    cache_velas = {}
     for m in lista:
         if m["mercado"] in abiertos or categoria(m) not in cats or m.get("sin_ofertas") or (m.get("horas") or 0) < horas_min:
             continue
@@ -273,7 +308,10 @@ def proponer(cfg, lista, posiciones, pendientes, libre, opinar, libro=None, glob
             if ld.get("precio") is None or ld.get("prob_modelo") is None or not pmin <= ld["precio"] <= pmax:
                 continue
             ld = {**ld, "prob_cal": pcal(m, ld)}
-            pe = T.prob_lado(mod, ld["precio"], ld["prob_cal"] / 100, m.get("horas"))
+            pb = _sim_pct(m, ld, velas_de, cache_velas)
+            pe = T.prob_lado(mod, ld["precio"], T.pm_para_modelo(mod, ld["prob_cal"] / 100, None if pb is None else pb / 100), m.get("horas")) if mod else None
+            if pb is not None:
+                ld["sim_pct"] = round(pb, 1)
             ld["prob_ent"] = round(pe * 100, 1) if pe is not None else None
             prob_fin = ld["prob_cal"] if pe is None or not peso else round((1 - peso) * ld["prob_cal"] + peso * pe * 100, 1)
             # La ventaja de la nube, movida lo que el aprendizaje y el modelo entrenado corrigieron la probabilidad.
